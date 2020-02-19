@@ -1,0 +1,415 @@
+---
+title: "MovieLens Project"
+author: "Nadim Yatim"
+date: "2/19/2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+Recommendation systems use the ratings that the users have already given in order to give recommendations for those users. The Netflix challenge was concerned with improving the recommendation algorithm, which predicts how many rating stars the user is going to give  to a certain movie, by 10% for a prize of $1 million. This MovieLens Capstone Project, motivated by the Netflix challenge, requires creating a movie recommendation system by using the MovieLens dataset, especially the 10M version of the MovieLens dataset. The recommendation system will be achieved by training the algorithms considered and using the inputs in edx set in order to predict the movie ratings in the validation set. The root mean square error(RMSE) is going to be used to evaluate the closeness of the predictions to the true values in the validation set. 
+
+
+#Methods/Analysis
+
+##Loss Function
+After constructing different models, we need to compare them in order to see if the improvement that we might have to the baseline model. For this to be quantified, we need to have a loss function. In our case, the loss function will be the residual mean squared error or the RMSE.
+
+
+The RMSE is somehow similar to the concept standard deviation by being the error that we might make when we predict the rating of a certain movie.
+
+To compute the RMSE for a vector of ratings and predictions then we need to use the following function
+
+
+```{r RMSE function}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2,))
+}
+
+```
+
+##Data Exploration and Visualization
+
+To start considering the datasets that are going to be used later on the in project, a code was provided in the Capstone project in order to create these datasets(edx and validation sets). A chunk of the code is found below
+
+
+
+```{r Load Data, echo=FALSE}
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1)
+# if using R 3.5 or earlier, use `set.seed(1)` instead
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+The edx dataset that is obtained is made up of 9,000,055 observations and has 6 features. Each row in this dataset represents a rating given by one user to one movie
+
+A sample of the edx data as well as a summary of each feature is as follows:
+
+```{r head,echo=FALSE}
+head(edx) 
+```
+
+
+
+```{r Summary,echo=FALSE }
+summary(edx) 
+
+```
+
+
+As for the validation set, using the above provided code, we make sure that all the userID and movieID are all present in the edx set. The validation set constitutes of 999,999 observations and 6 features(which are the same as those in the edx set).
+
+
+Some userIDs as well as movieIDs are repeated more than once. So it’s important to know how many people were involved in rating the movies and how many movies were rated. So in total we have 69,878 users that rated the movies and an overall number of 10,677 movies as shown below:
+
+```{r Unique Users and Movies,echo=FALSE }
+edx %>% 
+  summarize(NumberofUsers=n_distinct(userId),
+            NumberofMovies=n_distinct(movieId)
+  )
+
+```
+
+
+Furthermore, moving on to the ratings we can see through the summary that is ranges between 0.5 and 5 and the histogram of the rating below shows that ratings that were mostly used were 4, 3 and 5 in descending order. Another conclusion that could be made from the histogram is that whole ratings(1,2,3,4,5) are more commonly used than half ratings(0.5,1.5,2.5,3.5,4.5)
+
+```{r Histogram of the ratings, echo=FALSE }
+edx%>% ggplot(aes(rating))+
+  geom_histogram(bins=10,fill="navy",col="red") +
+  scale_x_continuous(breaks = seq(0.5,5,0.5)) 
+
+```
+
+Moving on to the movie titles, we see that the top 5 movies per movie ratings as shown below:
+
+
+```{r number of movie ratings done for the top 5 movies, echo=FALSE }
+edx %>% group_by(title) %>% 
+        summarize(count=n()) %>% 
+        arrange(desc(count)) %>% 
+        top_n(5) 
+
+```
+
+Moreover, we now need to consider what are the effects of some of the features, especially movieId and userId on the ratings. Starting with UserId, as we can see in the below histogram, some users are more active than others in rating movies where some users have rated more than 1000 movies while others only rated about 20 movies. The majority of users rated between 35 and 150 movies. 
+
+```{r number of movie ratings per userId, echo=FALSE }
+edx %>% count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 20, fill="navy", col = "red")+
+  scale_x_log10() +
+  xlab("Ratings")+
+  ylab("Users")
+
+```
+
+Moving on to the effect of movieId on ratings, as seen in the histogram below, we notice that some movies have a higher number of total ratings than others. This may be due to the popularity of the movie, like some being blockbusters while others aren’t that popular.
+
+```{r number of movie ratings per movieId, echo=FALSE }
+edx %>% count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram(bins = 20, fill="navy", col = "red")+
+  scale_x_log10() +
+  xlab("Ratings")+
+  ylab("Movies") 
+
+```
+
+Now, let’s consider the average rating per userId as well as that per movieId as seen in the below constructed histograms. This indicates that there can be bias based on the user and also based on the movie where we can have very low as well as very high ratings. 
+
+```{r Average rating per user, echo=FALSE }
+edx %>% group_by(userId) %>%
+  summarize(rating=mean(rating))%>%
+  ggplot(aes(rating))+
+  geom_histogram(bins=40 ,fill="navy",col="red")+
+  xlab("Average user rating") +
+  ylab("Users") + 
+  geom_vline(xintercept = mean(edx$rating),col="green") 
+
+```
+
+
+```{r Average rating per movie, echo=FALSE }
+edx %>% group_by(movieId) %>%
+  summarize(rating=mean(rating))%>%
+  ggplot(aes(rating))+
+  geom_histogram(bins=40 ,fill="navy",col="red")+
+  xlab("Average movie rating") +
+  ylab("Movies") + 
+  geom_vline(xintercept = mean(edx$rating),col="green") 
+
+```
+
+
+Splitting the edx dataset is done as the following code:
+
+```{r Splitting the edx dataset, }
+#Splitting the edx dataset into training and test sets
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)
+train <- edx[-test_index,]
+temp <- edx[test_index,]
+# Making sure userId and movieId in test set are also in train set
+test <- temp %>% 
+  semi_join(train, by = "movieId") %>%
+  semi_join(train, by = "userId")
+# Adding the rows that were removed from test set into the train set
+removed <- anti_join(temp, test)
+train <- rbind(train, removed)
+```
+
+
+##Models
+
+###The Average Model
+The first model that we are going to use is going to predict ratings based on the sample mean. This model assumes that the ratings for all the movies and users are the same.  The model is as follows where µ represents the true rating of all the movies and the users.
+
+```{r First Model, echo=FALSE }
+#average of all movies across all users
+mu_hat <- mean(train$rating) 
+
+#Calculating RMSE by predicting all unknown ratings with average mu_hat
+firstRMSE <- RMSE(validation$rating,mu_hat) 
+firstRMSE
+
+RMSE_Results<- data_frame(method="Just the average",RMSE=firstRMSE)
+
+#Displaying the RMSE results
+RMSE_Results %>% knitr::kable() 
+```
+
+
+As we expect the RMSE is considered to be quite high and has a value of 1.061202
+
+###Movie Effect Model
+
+As we have seen previously in the histogram constructed for the average rating for each movie, generally some movies are rated higher than others.  So we can add to the previous model the term bi which will represent the average rating for movie i. 
+
+Instead of running the least squares to estimate the b's which would be very slow, we calculate the b_i's using the following code:
+
+```{r Caclucating b_i}
+movie_averages <- train %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu_hat))  
+
+```
+
+When plotting the b_i  we see that these estimates actually vary a lot where some movies are considered to be good while others are not. Since the average is about rating is about 3.5, then if we have a bi of 1.5 this means that the we have a rating of 5.0
+
+```{r Distribution of b_i,echo=FALSE}
+movie_averages %>% ggplot(aes(b_i)) +
+               geom_histogram(bins=10,fill="navy",col="red") 
+
+```
+
+In order to see if our predictions improve or not, we execute the following piece of code.
+
+```{r Predictions}
+predicted_ratings <- mu_hat + validation %>% 
+  left_join(movie_averages, by='movieId') %>%
+  .$b_i
+```
+
+
+We then calculate the RMSE and as shown in the RMSE results, the second method that we used improved our results and reduced the RMSE to 0.943983
+
+```{r RMSE SECOND MODEL,echo=FALSE}
+secondRMSE <- RMSE(predicted_ratings, validation$rating)
+RMSE_Results <- bind_rows(RMSE_Results,
+                          data_frame(method="Movie Effect Model",
+                                     RMSE = secondRMSE ))
+#Displaying the RMSE results
+RMSE_Results %>% knitr::kable()  
+```
+
+###Movie and User Effects Model
+
+As seen previously in the histogram showing the average rating foe each user, we seen that there is high variability in the user ratings. Thus, we can further improve our model by adding a term to our established model, b_u, that is related the user-specific effect and how it can affect our ratings. 
+
+
+This shows that if a user rates poorly a movie having a positive b_i, the effects of both biases will cancel each other leading to a correct and improved prediction. 
+In order to fit this model, we are going to compute the values of the b_u as follows:
+
+```{r Caclucating b_u}
+user_averages <- train %>% 
+  left_join(movie_averages, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu_hat - b_i))
+
+```
+
+
+If we predict the values based on our new model and recalculate the RMSE we observe an additional improvement than the previous model reaching a value of 0.8658286 
+
+```{r RMSE Third Model, echo=FALSE}
+predicted_ratings <- validation %>% 
+  left_join(movie_averages, by="movieId") %>%
+  left_join(user_averages, by="userId") %>%
+  mutate(pred = mu_hat + b_i + b_u) %>%
+  .$pred
+
+thirdRMSE <- RMSE(predicted_ratings, validation$rating)
+RMSE_Results <- bind_rows(RMSE_Results,
+                          data_frame(method="Movie + User Effects Model",  
+                                     RMSE = thirdRMSE ))
+
+#Displaying the RMSE results
+RMSE_Results %>% knitr::kable()
+```
+
+
+###Regularized Movie Effect Model
+If we return to our second model, we see that the best and worst movies were rated by only very few users. 
+
+Regularization allows us to penalize large estimates that come from small sample sizes. It is similar to the Bayesian approaches in which it has several commonalities with it. Moreover, it works by adding a penalty for large values of b, the bias or effect, to the sum of squares equations that is being minimized.
+
+Instead of minimizing the residual sum of squares as the least squares does, now we take a differnet approach which covers minimization for estimating the b_is:
+
+The parameter λ is a tuning parameter. 
+
+Cross validation is used in order to pick the optimal λ that minimizes the RMSE as follows
+
+```{r calculate the optmial lambda by using cross validation }
+#calculate the optmial lambda by using cross validation
+lambdas <- seq(0, 10, 0.25)
+total <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(s = sum(rating - mu_hat), n_i = n())
+rmses <- sapply(lambdas, function(l){
+  predicted_ratings <- validation %>% 
+    left_join(total, by='movieId') %>% 
+    mutate(b_i = s/(n_i+l)) %>%
+    mutate(pred = mu_hat + b_i) %>%
+    .$pred
+  return(RMSE(predicted_ratings, validation$rating))
+})
+```
+
+If we plot the RMSE that we obtained for each obtained, we get the following plot
+```{r plot of RMSES,echo=FALSE}
+
+qplot(lambdas, rmses, col="red")  
+```
+
+
+This shows that the λ that will allow us to obtain the minimum RMSE if 2.5
+```{r Value of lambda that minimizes RMSE}
+#Value of lambda that minimizes RMSE
+lambdas[which.min(rmses)]
+```
+
+This λ yields an RMSE of 0.9438521 which is a slight improvement to the movie effect model before being regularized.
+
+```{r RMSE Fourth Model, echo=FALSE}
+RMSE_Results <- bind_rows(RMSE_Results,
+                          data_frame(method="Regularized Movie Effect Model",  
+                                     RMSE = min(rmses)))
+
+#Displaying the RMSE results
+RMSE_Results %>% knitr::kable()
+
+```
+
+###Regularized Movie and Users Effects Model
+
+Regularization can also be used to estimate the user effect.
+
+Similar to what was done in the Regularized Movie Effect Model, is chosen by cross validation
+
+```{r calculate lambda by using cross validation }
+#Calucalting lambdas
+lambdas <- seq(0, 10, 0.25)
+rmses <- sapply(lambdas, function(l){
+  mu_hat <- mean(train$rating)
+  b_i <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu_hat)/(n()+l))
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu_hat)/(n()+l))
+  predicted_ratings <- 
+    validation %>% 
+    left_join(b_i, by = "movieId") %>%
+   left_join(b_u, by = "userId") %>%
+    mutate(pred = mu_hat + b_i + b_u) %>%
+    .$pred
+  return(RMSE(predicted_ratings, validation$rating))
+})
+
+#Plot of RMSES verses lambdas
+qplot(lambdas,rmses,col="red")
+```
+
+We obtain that the λ that will allow us to have the minimum RMSE is 5.25.
+
+```{r  lambda that minimizes RMSE}
+#Value of lambda that minimizes RMSE
+lambdas[which.min(rmses)]
+```
+
+Accordingly, choosing λ equals to 5.25, will allow us to reach an RMSE of 0.864817 which is also considered to be an improvement on the Movie and User Effects Model and it yields the lowest RMSE compared to the 4 other models.
+
+```{r RMSE Fifth Model, echo=FALSE}
+RMSE_Results <- bind_rows(RMSE_Results,
+                          data_frame(method="Regularized Movie + User Effect Model",  
+                                     RMSE = min(rmses)))
+
+#Displaying the RMSE results
+RMSE_Results %>% knitr::kable()
+```
+
+#Results
+We have considered 5 models as described above and each model resulted in a specific value of RMSE and we saw that the least values of the RMSE were due to regularization. We were able to reach an RMSE less than 0.86490 when using the regularized movie and user effects model. The values of the RMSEs across the 5 models are displayed in the table below
+
+```{r Results, echo=FALSE}
+#Displaying the RMSE results
+RMSE_Results %>% knitr::kable()
+```
+
+#Conclusion
+
+After considering several models, from naïve to considering movieId effect alone and combining it with the userId whether it has been regularized or not, we have seen that the regularized model considering both the movieId and userId effects resulted in obtaining the least RMSE having a value of 0.864817. This is a huge improvement from the baseline model which resulted in an RMSE of 1.0612018 meaning that the rating error is more than one star. So we were able to continue on improving our predictions leading to lower errors until we reached a minimum of 0.864817 with the final regularized model. Further addition and consideration of genre and age effects in regularized models are also expected to result in decrease in RMSE to further lower values than the minimum obtained. Alternative machine learning models can be considered and could result in further reductions of the RMSE but some limitations such as computer power and ability might be a challenge for running such algorithms and models.
+
